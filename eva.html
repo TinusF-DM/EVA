@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EVA - Everlytic Visual Analyzer</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Chart.js and Datalabels Plugin for graphs -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary-text': '#21283a',
+                        'primary-accent': '#a1d140',
+                        'secondary-pink': '#d22d93',
+                        'secondary-blue': '#3881c1',
+                        'tertiary-orange': '#ee8031',
+                        'tertiary-purple': '#9337f6',
+                        'tertiary-yellow': '#f6c944',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Use Inter as the default font */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Style for the file input button */
+        .file-input-button {
+            cursor: pointer;
+            padding: 0.75rem 1.5rem;
+            text-align: center;
+            color: white;
+            border-radius: 0.5rem;
+            transition: background-color 0.2s;
+        }
+        /* Styles for the accordion */
+        .accordion-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+        /* Ensure date input text is visible */
+        input[type="date"]::-webkit-calendar-picker-indicator {
+            cursor: pointer;
+        }
+        /* Styles for view toggle buttons */
+        .view-toggle-btn {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            transition: all 0.2s;
+            font-weight: 500;
+        }
+        .view-toggle-btn.active {
+            background-color: #21283a;
+            color: white;
+        }
+        .view-toggle-btn:not(.active) {
+            background-color: #e2e8f0;
+            color: #475569;
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-primary-text">
+
+    <div class="container mx-auto p-4 sm:p-6 lg:p-8 max-w-7xl">
+        
+        <!-- Header Section -->
+        <div class="text-center mb-8">
+            <img src="https://www.everlytic.com/wp-content/uploads/2025/03/Everlytic-logo-x1-1.webp" alt="Everlytic Logo" class="h-8 mx-auto mb-4" onerror="this.style.display='none'">
+            <h1 class="text-4xl sm:text-5xl font-bold text-primary-text">EVA</h1>
+            <p class="mt-2 text-slate-600">Upload your `AccountLogs_... .csv` file to see a structured summary.</p>
+        </div>
+
+        <!-- File Upload Section -->
+        <div class="bg-white p-6 rounded-lg shadow-md max-w-md mx-auto">
+            <label for="csvFileInput" class="file-input-button block bg-secondary-blue hover:bg-opacity-80">
+                Choose a CSV File
+            </label>
+            <input type="file" id="csvFileInput" accept=".csv" class="hidden">
+            <p id="fileName" class="text-center text-sm text-slate-500 mt-4">No file selected</p>
+        </div>
+
+        <!-- Results Ribbon Section -->
+        <div id="results-ribbon-area" class="mt-8"></div>
+
+        <!-- Filter Section -->
+        <div id="filter-controls-area" class="mt-6"></div>
+
+        <!-- View Toggle Section -->
+        <div id="view-toggle-area" class="mt-6 text-center"></div>
+
+        <!-- Data Display Section -->
+        <div id="display-area" class="mt-6">
+            <div class="bg-white p-6 rounded-lg shadow-md text-center text-slate-500">
+                <p>Your data will appear here.</p>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // DOM element references
+        const csvFileInput = document.getElementById('csvFileInput');
+        const displayArea = document.getElementById('display-area');
+        const fileNameDisplay = document.getElementById('fileName');
+        const resultsRibbonArea = document.getElementById('results-ribbon-area');
+        const filterControlsArea = document.getElementById('filter-controls-area');
+        const viewToggleArea = document.getElementById('view-toggle-area');
+
+        // Store for the full dataset once parsed
+        let fullDataset = {
+            reportTitle: '',
+            headers: [],
+            headerMap: {},
+            rows: [] 
+        };
+        let activeView = 'graphs'; // Default view
+        let charts = []; // To keep track of chart instances
+
+        // Register Chart.js datalabels plugin globally
+        Chart.register(ChartDataLabels);
+
+        // Event listener for file selection
+        csvFileInput.addEventListener('change', handleFileSelect);
+
+        /**
+         * A more robust CSV parser that handles quoted fields.
+         */
+        function parseCSV(text) {
+            const result = [];
+            let currentRow = [];
+            let currentCell = '';
+            let inQuotes = false;
+
+            for (let i = 0; i < text.length; i++) {
+                const char = text[i];
+                const nextChar = text[i + 1];
+
+                if (inQuotes) {
+                    if (char === '"' && nextChar === '"') {
+                        currentCell += '"'; i++;
+                    } else if (char === '"') {
+                        inQuotes = false;
+                    } else {
+                        currentCell += char;
+                    }
+                } else {
+                    if (char === '"') {
+                        inQuotes = true;
+                    } else if (char === ',') {
+                        currentRow.push(currentCell.trim());
+                        currentCell = '';
+                    } else if (char === '\n' || char === '\r') {
+                        if (i > 0 && text[i-1] !== '\n' && text[i-1] !== '\r') {
+                            currentRow.push(currentCell.trim());
+                            result.push(currentRow);
+                            currentRow = [];
+                            currentCell = '';
+                        }
+                        if (char === '\r' && nextChar === '\n') i++;
+                    } else {
+                        currentCell += char;
+                    }
+                }
+            }
+            if (currentCell || currentRow.length > 0) {
+                currentRow.push(currentCell.trim());
+                result.push(currentRow);
+            }
+            return result;
+        }
+        
+        /**
+         * Dynamically finds column indices based on a set of possible names.
+         */
+        function findHeaderIndices(actualHeaders) {
+            const headerPossibilities = {
+                customerName: ['Customer Name', 'Client Name', 'Account Name'],
+                messageId: ['Message ID', 'ID'],
+                messageSubject: ['Message Subject', 'Subject'],
+                messageType: ['Message Type'],
+                sendDate: ['Send Date', 'Date', 'Date Sent'],
+                emailsSent: ['Emails Sent'],
+                smsSent: ['Sms Sent'],
+                smsFailed: ['Sms Failed'],
+                smsCreditUsed: ['SMSs credit used', 'SMS Credit'],
+                totalTransactional: ['Total Transactional'],
+                uniqueReads: ['Unique Reads'],
+                uniqueClicks: ['Unique Clicks'],
+                unsubscribes: ['Unsubscribes'],
+                readRate: ['Read Rate'],
+                clickRate: ['Click Rate'],
+                bounceRate: ['Bounce rate'],
+                complaintRate: ['Complaint Rate'],
+                unsubscribeRate: ['Unsubscribe Rate']
+            };
+
+            const foundIndices = {};
+            const lowercasedHeaders = actualHeaders.map(h => h.toLowerCase());
+
+            for (const standardName in headerPossibilities) {
+                foundIndices[standardName] = -1; // Default to -1 (not found)
+                for (const possibleName of headerPossibilities[standardName]) {
+                    const index = lowercasedHeaders.indexOf(possibleName.toLowerCase());
+                    if (index !== -1) {
+                        foundIndices[standardName] = index;
+                        break;
+                    }
+                }
+            }
+            return foundIndices;
+        }
+
+        /**
+         * Pre-processes rows to fill down the customer name for all associated campaigns.
+         */
+        function preprocessAndFillDownCustomerNames(rows, headerMap) {
+            let currentCustomerName = null;
+            const customerNameIndex = headerMap.customerName;
+            const messageSubjectIndex = headerMap.messageSubject;
+
+            if (customerNameIndex === -1) return rows;
+
+            return rows.map(row => {
+                const newRow = [...row];
+                const customerCell = (newRow[customerNameIndex] || '').trim();
+                const subjectCell = (newRow[messageSubjectIndex] || '').trim();
+
+                if (customerCell) {
+                    currentCustomerName = customerCell;
+                }
+
+                if (subjectCell && !customerCell && currentCustomerName) {
+                    newRow[customerNameIndex] = currentCustomerName;
+                }
+                return newRow;
+            });
+        }
+
+
+        /**
+         * Handles the file selection, validation, and reading.
+         */
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (!file.name.endsWith('.csv')) {
+                fileNameDisplay.textContent = 'Invalid file type. Please select a .csv file.';
+                fileNameDisplay.classList.add('text-red-500');
+                return;
+            }
+            
+            fileNameDisplay.textContent = `Selected file: ${file.name}`;
+            fileNameDisplay.classList.remove('text-red-500');
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const parsedData = parseCSV(e.target.result);
+                if (parsedData.length < 2) {
+                    displayArea.innerHTML = '<p class="text-center text-red-500">Invalid file format.</p>';
+                    return;
+                }
+                
+                const headers = parsedData[1];
+                const headerMap = findHeaderIndices(headers);
+
+                if (headerMap.customerName === -1) {
+                    displayArea.innerHTML = '<p class="text-center text-red-500">Error: Could not find the "Customer Name" column in the file.</p>';
+                    return;
+                }
+                
+                const dataRows = parsedData.slice(2);
+                const preprocessedRows = preprocessAndFillDownCustomerNames(dataRows, headerMap);
+
+                fullDataset = {
+                    reportTitle: parsedData[0][0],
+                    headers: headers,
+                    headerMap: headerMap,
+                    rows: preprocessedRows
+                };
+                
+                renderFilterControls(fullDataset.rows);
+                renderViewToggle();
+                runFilters();
+            };
+            reader.onerror = () => {
+                displayArea.innerHTML = `<p class="text-center text-red-500">Error reading file.</p>`;
+            };
+            reader.readAsText(file);
+        }
+
+        /**
+         * Renders all filter controls.
+         */
+        function renderFilterControls(dataRows) {
+            const sendDateIndex = fullDataset.headerMap.sendDate;
+            if (sendDateIndex === -1) {
+                filterControlsArea.innerHTML = '<p class="text-center text-red-500">"Send Date" column not found. Cannot create date filters.</p>';
+                return;
+            };
+            const dates = dataRows.map(row => parseCsvDate(row[sendDateIndex])).filter(date => date);
+            if (dates.length === 0) {
+                 filterControlsArea.innerHTML = '';
+                 return;
+            }
+
+            const minDate = new Date(Math.min(...dates));
+            const maxDate = new Date(Math.max(...dates));
+            
+            const customerNameIndex = fullDataset.headerMap.customerName;
+            const customerNames = [...new Set(dataRows.map(row => row[customerNameIndex]).filter(name => name))];
+            const customerOptions = customerNames.map(name => `<option value="${name}">${name}</option>`).join('');
+
+            filterControlsArea.innerHTML = `
+                <div class="bg-white p-4 rounded-lg shadow-md space-y-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+                        <div class="flex items-center gap-2 w-full">
+                            <label for="startDate" class="text-sm font-medium text-slate-700">From:</label>
+                            <input type="date" id="startDate" class="p-2 border border-slate-300 rounded-md w-full" value="${toISODateString(minDate)}">
+                        </div>
+                        <div class="flex items-center gap-2 w-full">
+                            <label for="endDate" class="text-sm font-medium text-slate-700">To:</label>
+                            <input type="date" id="endDate" class="p-2 border border-slate-300 rounded-md w-full" value="${toISODateString(maxDate)}">
+                        </div>
+                    </div>
+                    <div class="border-t border-slate-200 pt-4 grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
+                        <div class="flex items-center gap-2 w-full">
+                            <label for="customerFilter" class="text-sm font-medium text-slate-700 whitespace-nowrap">Customer:</label>
+                            <select id="customerFilter" class="p-2 border border-slate-300 rounded-md w-full">
+                                <option value="all">All Customers</option>
+                                ${customerOptions}
+                            </select>
+                        </div>
+                        <div class="flex items-center gap-2 w-full">
+                            <label for="messageTypeFilter" class="text-sm font-medium text-slate-700 whitespace-nowrap">Message Type:</label>
+                            <select id="messageTypeFilter" class="p-2 border border-slate-300 rounded-md w-full">
+                                <option value="email">Email</option>
+                                <option value="sms">SMS</option>
+                            </select>
+                        </div>
+                        <div class="flex items-center gap-2 w-full">
+                            <label for="minSentCount" class="text-sm font-medium text-slate-700 whitespace-nowrap">Min Sent Count:</label>
+                            <input type="number" id="minSentCount" class="p-2 border border-slate-300 rounded-md w-full" value="0" min="0">
+                        </div>
+                    </div>
+                    <div class="border-t border-slate-200 pt-4 grid grid-cols-1">
+                         <div class="flex items-center gap-2 w-full">
+                            <label for="advancedFilter" class="text-sm font-medium text-slate-700 whitespace-nowrap">Performance Filter:</label>
+                            <select id="advancedFilter" class="p-2 border border-slate-300 rounded-md w-full"></select>
+                        </div>
+                    </div>
+                    <div class="border-t border-slate-200 pt-4 flex justify-center">
+                        <button id="filterButton" class="bg-primary-accent text-white px-6 py-2 rounded-md hover:bg-opacity-80 transition w-full sm:w-auto">Apply All Filters</button>
+                    </div>
+                </div>
+            `;
+            
+            updatePerformanceFilterOptions(); // Initial population
+            document.getElementById('messageTypeFilter').addEventListener('change', updatePerformanceFilterOptions);
+            document.getElementById('filterButton').addEventListener('click', runFilters);
+        }
+
+        /**
+         * Renders the view toggle buttons.
+         */
+        function renderViewToggle() {
+            viewToggleArea.innerHTML = `
+                <div class="inline-flex rounded-lg shadow-sm">
+                    <button id="graphs-view-btn" class="view-toggle-btn rounded-l-lg ${activeView === 'graphs' ? 'active' : ''}">Graphs</button>
+                    <button id="data-view-btn" class="view-toggle-btn rounded-r-lg ${activeView === 'data' ? 'active' : ''}">Data</button>
+                </div>
+            `;
+            document.getElementById('graphs-view-btn').addEventListener('click', () => switchView('graphs'));
+            document.getElementById('data-view-btn').addEventListener('click', () => switchView('data'));
+        }
+
+        /**
+         * Switches the active view between graphs and data.
+         */
+        function switchView(view) {
+            activeView = view;
+            document.getElementById('graphs-view-btn').classList.toggle('active', view === 'graphs');
+            document.getElementById('data-view-btn').classList.toggle('active', view === 'data');
+            document.getElementById('graph-view-container').classList.toggle('hidden', view !== 'graphs');
+            document.getElementById('data-view-container').classList.toggle('hidden', view !== 'data');
+        }
+
+        /**
+         * Updates the performance filter options based on the selected message type.
+         */
+        function updatePerformanceFilterOptions() {
+            const messageType = document.getElementById('messageTypeFilter').value;
+            const advancedFilter = document.getElementById('advancedFilter');
+            advancedFilter.innerHTML = ''; // Clear existing options
+
+            const options = {
+                'none': 'Show All Data',
+                ...(messageType === 'email' && {
+                    'read-best-5': 'Best 5 (Highest Read Rate)',
+                    'read-worst-5': 'Lowest 5 (Lowest Read Rate)',
+                    'click-best-5': 'Best 5 (Highest Click Rate)',
+                    'click-worst-5': 'Lowest 5 (Lowest Click Rate)',
+                    'bounce-worst-1': 'Highest Bounce Rate',
+                    'complaint-worst-1': 'Highest Complaint Rate',
+                    'unsubscribe-worst-1': 'Highest Unsubscribe Rate'
+                }),
+                ...(messageType === 'sms' && {
+                    'sms-best-5': 'Best 5 (Highest Sent)',
+                    'sms-worst-5': 'Lowest 5 (Lowest Sent)'
+                })
+            };
+
+            for (const [value, text] of Object.entries(options)) {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = text;
+                advancedFilter.appendChild(option);
+            }
+        }
+
+        /**
+         * Main function to get filtered data and trigger rendering.
+         */
+        function runFilters() {
+            const startDateElement = document.getElementById('startDate');
+            if (!startDateElement) {
+                const groupedData = structureDataByGroup(fullDataset.rows);
+                renderResultsRibbon(fullDataset.rows, fullDataset.rows);
+                renderGroupedData(groupedData, fullDataset.reportTitle);
+                return;
+            }
+
+            const startDate = new Date(startDateElement.value + 'T00:00:00');
+            const endDate = new Date(document.getElementById('endDate').value + 'T23:59:59');
+            const advancedFilterValue = document.getElementById('advancedFilter').value;
+            const minSentCount = parseInt(document.getElementById('minSentCount').value) || 0;
+            const messageType = document.getElementById('messageTypeFilter').value;
+            const selectedCustomer = document.getElementById('customerFilter').value;
+
+            const { sendDate, messageSubject, emailsSent, smsSent, messageType: messageTypeIndex, customerName } = fullDataset.headerMap;
+
+            const dateFilteredRows = fullDataset.rows.filter(row => {
+                const rowDate = parseCsvDate(row[sendDate]);
+                return !rowDate || (rowDate >= startDate && rowDate <= endDate);
+            });
+
+            const baseFilteredLogs = dateFilteredRows.filter(row => {
+                const subject = (row[messageSubject] || '').trim();
+                const type = (row[messageTypeIndex] || '').toLowerCase();
+                const custName = (row[customerName] || '').trim();
+                
+                if (subject && type === messageType) {
+                    const sentCount = messageType === 'email' ? parseInt(row[emailsSent] || 0) : parseInt(row[smsSent] || 0);
+                    const customerMatch = (selectedCustomer === 'all' || custName === selectedCustomer);
+                    return sentCount >= minSentCount && customerMatch;
+                }
+                return false;
+            });
+            
+            renderResultsRibbon(dateFilteredRows, baseFilteredLogs);
+            
+            renderGraphs(baseFilteredLogs, messageType);
+            if (advancedFilterValue === 'none') {
+                const groupedData = structureDataByGroup(baseFilteredLogs);
+                renderGroupedData(groupedData, fullDataset.reportTitle, messageType);
+            } else {
+                applyAdvancedFilter(advancedFilterValue, baseFilteredLogs);
+                switchView('data');
+            }
+        }
+        
+        /**
+         * Applies a specific ranking filter and renders the result.
+         */
+        function applyAdvancedFilter(filterValue, logs) {
+            const headerMap = fullDataset.headerMap;
+            let rankedLogs = [];
+            let title = '';
+            let tableHeaders = [];
+
+            let validLogsForRanking = logs.filter(row => (parseInt(row[headerMap.messageId] || 0) > 1));
+
+            const sortAndSlice = (metricKey, order, count) => {
+                const metricIndex = headerMap[metricKey];
+                if (metricIndex === -1) return [];
+                return validLogsForRanking
+                    .map(row => ({ row, value: parseFloat(row[metricIndex] || 0) }))
+                    .sort((a, b) => order === 'desc' ? b.value - a.value : a.value - b.value)
+                    .slice(0, count)
+                    .map(item => item.row);
+            };
+
+            if (filterValue.startsWith('sms-')) {
+                tableHeaders = ['Message ID', 'Message Subject', 'Send Date', 'Sms Sent', 'SMSs credit used'];
+                switch (filterValue) {
+                    case 'sms-best-5':
+                        title = 'Top 5 SMS by Sent Count';
+                        rankedLogs = sortAndSlice('smsSent', 'desc', 5);
+                        break;
+                    case 'sms-worst-5':
+                        title = 'Bottom 5 SMS by Sent Count';
+                        rankedLogs = sortAndSlice('smsSent', 'asc', 5);
+                        break;
+                }
+            } else { // Email filters
+                tableHeaders = ['Message ID', 'Message Subject', 'Send Date', 'Emails Sent', 'Read Rate', 'Click Rate', 'Bounce rate', 'Complaint Rate', 'Unsubscribe Rate'];
+                switch (filterValue) {
+                    case 'read-best-5':
+                        title = 'Top 5 Emails by Read Rate';
+                        rankedLogs = sortAndSlice('readRate', 'desc', 5);
+                        break;
+                    case 'read-worst-5':
+                        title = 'Bottom 5 Emails by Read Rate';
+                        rankedLogs = sortAndSlice('readRate', 'asc', 5);
+                        break;
+                    case 'click-best-5':
+                        title = 'Top 5 Emails by Click Rate';
+                        rankedLogs = sortAndSlice('clickRate', 'desc', 5);
+                        break;
+                    case 'click-worst-5':
+                        title = 'Bottom 5 Emails by Click Rate';
+                        rankedLogs = sortAndSlice('clickRate', 'asc', 5);
+                        break;
+                    case 'bounce-worst-1':
+                        title = 'Email with Highest Bounce Rate';
+                        rankedLogs = sortAndSlice('bounceRate', 'desc', 1);
+                        break;
+                    case 'complaint-worst-1':
+                        title = 'Email with Highest Complaint Rate';
+                        rankedLogs = sortAndSlice('complaintRate', 'desc', 1);
+                        break;
+                    case 'unsubscribe-worst-1':
+                        title = 'Email with Highest Unsubscribe Rate';
+                        rankedLogs = sortAndSlice('unsubscribeRate', 'desc', 1);
+                        break;
+                }
+            }
+            renderRankedResults(rankedLogs, title, tableHeaders);
+        }
+
+        /**
+         * Renders a special table for the ranked filter results.
+         */
+        function renderRankedResults(logs, title, tableHeaders) {
+            const dataViewContainer = document.getElementById('data-view-container');
+            if (!dataViewContainer) return;
+
+            const container = document.createElement('div');
+            container.className = 'bg-white p-6 rounded-lg shadow-md';
+            
+            const titleEl = document.createElement('h2');
+            titleEl.className = 'text-xl font-semibold text-primary-text mb-4 text-center';
+            titleEl.textContent = title;
+            container.appendChild(titleEl);
+
+            if (logs.length === 0) {
+                container.innerHTML += '<p class="text-center text-slate-500">No data to display for this filter. Check your filter criteria.</p>';
+                dataViewContainer.innerHTML = '';
+                dataViewContainer.appendChild(container);
+                return;
+            }
+
+            let tableHTML = '<div class="overflow-x-auto"><table class="min-w-full text-sm divide-y divide-slate-200">';
+            tableHTML += '<thead class="bg-slate-50"><tr>';
+            tableHeaders.forEach(h => {
+                tableHTML += `<th scope="col" class="px-4 py-2 text-left font-medium text-slate-500 uppercase tracking-wider">${h}</th>`;
+            });
+            tableHTML += '</tr></thead>';
+            tableHTML += '<tbody class="bg-white divide-y divide-slate-200">';
+            
+            const headerMap = Object.fromEntries(fullDataset.headers.map((h, i) => [h, i]));
+            logs.forEach(logRow => {
+                tableHTML += '<tr class="hover:bg-slate-50">';
+                tableHeaders.forEach(header => {
+                    let value = logRow[headerMap[header]];
+                    if (value !== undefined) {
+                        if (header.includes('Rate')) value += '%';
+                        tableHTML += `<td class="px-4 py-3 whitespace-nowrap text-primary-text">${value}</td>`;
+                    }
+                });
+                tableHTML += '</tr>';
+            });
+            tableHTML += '</tbody></table></div>';
+            
+            container.innerHTML += tableHTML;
+            dataViewContainer.innerHTML = '';
+            dataViewContainer.appendChild(container);
+        }
+
+        /**
+         * Renders the top results ribbon.
+         */
+        function renderResultsRibbon(allDateFilteredRows, campaignLogs) {
+            if (allDateFilteredRows.length === 0) {
+                resultsRibbonArea.innerHTML = '';
+                return;
+            }
+            const headerMap = fullDataset.headerMap;
+            const totals = {
+                emailsSent: 0, smsSent: 0, smsCreditUsed: 0, totalTransactional: 0, readRates: [],
+                clickRates: [], bounceRates: [], complaintRates: [], unsubscribeRates: []
+            };
+
+            campaignLogs.forEach(row => {
+                totals.emailsSent += parseInt(row[headerMap.emailsSent] || 0);
+                totals.smsSent += parseInt(row[headerMap.smsSent] || 0);
+                totals.smsCreditUsed += parseFloat(row[headerMap.smsCreditUsed] || 0);
+            });
+
+            allDateFilteredRows.forEach(row => {
+                totals.totalTransactional += parseInt(row[headerMap.totalTransactional] || 0);
+            });
+
+            const logsForAverages = campaignLogs.filter(row => parseInt(row[headerMap.messageId] || 0) > 0);
+
+            logsForAverages.forEach(row => {
+                totals.readRates.push(parseFloat(row[headerMap.readRate] || 0));
+                totals.clickRates.push(parseFloat(row[headerMap.clickRate] || 0));
+                totals.bounceRates.push(parseFloat(row[headerMap.bounceRate] || 0));
+                totals.complaintRates.push(parseFloat(row[headerMap.complaintRate] || 0));
+                totals.unsubscribeRates.push(parseFloat(row[headerMap.unsubscribeRate] || 0));
+            });
+
+            const calculateAverage = (arr) => arr.length > 0 ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(2) : '0.00';
+            const stats = [
+                { label: 'Total Emails Sent', value: totals.emailsSent.toLocaleString(), color: 'text-secondary-blue' },
+                { label: 'Total SMS Sent', value: totals.smsSent.toLocaleString(), color: 'text-tertiary-purple' },
+                { label: 'Total SMS Credit Used', value: Math.round(totals.smsCreditUsed).toLocaleString(), color: 'text-tertiary-orange' },
+                { label: 'Total Transactional', value: totals.totalTransactional.toLocaleString(), color: 'text-primary-accent' },
+                { label: 'Avg. Read Rate', value: `${calculateAverage(totals.readRates)}%`, color: 'text-secondary-pink' },
+                { label: 'Avg. Bounce Rate', value: `${calculateAverage(totals.bounceRates)}%`, color: 'text-tertiary-yellow' },
+                { label: 'Avg. Complaint Rate', value: `${calculateAverage(totals.complaintRates)}%`, color: 'text-tertiary-orange' },
+                { label: 'Avg. Unsubscribe Rate', value: `${calculateAverage(totals.unsubscribeRates)}%`, color: 'text-secondary-blue' },
+                { label: 'Avg. Click Rate', value: `${calculateAverage(totals.clickRates)}%`, color: 'text-tertiary-purple' },
+            ];
+
+            resultsRibbonArea.innerHTML = `<div class="bg-white p-4 rounded-lg shadow-md"><h2 class="text-lg font-bold text-primary-text mb-4 text-center">Overall Results (for selected filters)</h2><div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">${stats.map(stat => `<div class="bg-slate-50 p-3 rounded-lg"><p class="text-sm text-slate-500 font-medium">${stat.label}</p><p class="text-2xl font-bold ${stat.color}">${stat.value}</p></div>`).join('')}</div></div>`;
+        }
+        
+        /**
+         * Groups data by customer name.
+         */
+        function structureDataByGroup(dataRows) {
+            const groups = {};
+            const { messageSubject, customerName } = fullDataset.headerMap;
+
+            dataRows.forEach(row => {
+                const custName = (row[customerName] || '').trim();
+                const subject = (row[messageSubject] || '').trim();
+
+                if (subject && custName) {
+                    if (!groups[custName]) {
+                        groups[custName] = { logs: [] };
+                    }
+                    const logEntry = {};
+                    fullDataset.headers.forEach((header, index) => {
+                        logEntry[header] = (row[index] || '').trim();
+                    });
+                    groups[custName].logs.push(logEntry);
+                }
+            });
+            return groups;
+        }
+
+        /**
+         * Renders the structured data into an accordion UI.
+         */
+        function renderGroupedData(groupedData, reportTitle, messageType) {
+            const dataViewContainer = document.getElementById('data-view-container');
+            if (!dataViewContainer) return;
+            dataViewContainer.innerHTML = ''; 
+
+            const titleEl = document.createElement('h2');
+            titleEl.className = 'text-xl font-semibold text-primary-text mb-6 text-center';
+            titleEl.textContent = reportTitle;
+            dataViewContainer.appendChild(titleEl);
+
+            const accordionContainer = document.createElement('div');
+            accordionContainer.className = 'space-y-4';
+
+            if (Object.keys(groupedData).length === 0 || Object.values(groupedData).every(g => g.logs.length === 0)) {
+                dataViewContainer.innerHTML += '<div class="bg-white p-6 rounded-lg shadow-md text-center text-slate-500"><p>No customers with sent campaigns match the current filters.</p></div>';
+                return;
+            }
+
+            for (const groupName in groupedData) {
+                const groupLogs = groupedData[groupName].logs;
+                if (groupLogs.length === 0) continue;
+
+                const groupContainer = document.createElement('div');
+                groupContainer.className = 'bg-white rounded-lg shadow-md overflow-hidden';
+                const header = document.createElement('button');
+                header.className = 'w-full p-5 text-left flex justify-between items-center hover:bg-slate-50 focus:outline-none';
+                
+                let headerHTML = '';
+                if (messageType === 'email') {
+                    const { emailsSent, smsCreditUsed } = fullDataset.headerMap;
+                    const totalEmails = groupLogs.reduce((sum, log) => sum + parseInt(log[fullDataset.headers[emailsSent]] || 0), 0);
+                    const totalSmsCredit = groupLogs.reduce((sum, log) => sum + parseFloat(log[fullDataset.headers[smsCreditUsed]] || 0), 0);
+                    headerHTML = `
+                        <div>
+                            <h3 class="text-lg font-bold text-secondary-pink">${groupName}</h3>
+                            <div class="text-sm text-slate-500 mt-1 space-x-4">
+                                <span><strong>${totalEmails.toLocaleString()}</strong> Emails Sent</span>
+                                <span><strong>${Math.round(totalSmsCredit).toLocaleString()}</strong> SMS Credit Used</span>
+                            </div>
+                        </div>`;
+                } else { // SMS
+                    const { smsCreditUsed, smsSent, smsFailed, readRate, clickRate, bounceRate, complaintRate, unsubscribeRate } = fullDataset.headerMap;
+                    const totalSmsCredit = groupLogs.reduce((sum, log) => sum + parseFloat(log[fullDataset.headers[smsCreditUsed]] || 0), 0);
+                    const totalSmsSent = groupLogs.reduce((sum, log) => sum + parseInt(log[fullDataset.headers[smsSent]] || 0), 0);
+                    const totalSmsFailed = groupLogs.reduce((sum, log) => sum + parseInt(log[fullDataset.headers[smsFailed]] || 0), 0);
+                    const calculateAverage = (arr) => arr.length > 0 ? (arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(2) : '0.00';
+                    const avgReadRate = calculateAverage(groupLogs.map(log => parseFloat(log[fullDataset.headers[readRate]] || 0)));
+                    const avgClickRate = calculateAverage(groupLogs.map(log => parseFloat(log[fullDataset.headers[clickRate]] || 0)));
+                    const avgBounceRate = calculateAverage(groupLogs.map(log => parseFloat(log[fullDataset.headers[bounceRate]] || 0)));
+                    const avgComplaintRate = calculateAverage(groupLogs.map(log => parseFloat(log[fullDataset.headers[complaintRate]] || 0)));
+                    const avgUnsubscribeRate = calculateAverage(groupLogs.map(log => parseFloat(log[fullDataset.headers[unsubscribeRate]] || 0)));
+                    headerHTML = `
+                        <div>
+                            <h3 class="text-lg font-bold text-secondary-pink">${groupName}</h3>
+                            <div class="text-sm text-slate-500 mt-1 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-x-4 gap-y-1">
+                                <span><strong>${Math.round(totalSmsCredit).toLocaleString()}</strong> Credit Used</span>
+                                <span><strong>${totalSmsSent.toLocaleString()}</strong> Sent</span>
+                                <span><strong>${totalSmsFailed.toLocaleString()}</strong> Failed</span>
+                                <span><strong>${avgReadRate}%</strong> Read Rate</span>
+                                <span><strong>${avgClickRate}%</strong> Click Rate</span>
+                                <span><strong>${avgBounceRate}%</strong> Bounce Rate</span>
+                                <span><strong>${avgComplaintRate}%</strong> Complaint Rate</span>
+                                <span><strong>${avgUnsubscribeRate}%</strong> Unsubscribe Rate</span>
+                            </div>
+                        </div>`;
+                }
+                header.innerHTML = headerHTML + `<svg class="w-6 h-6 transform transition-transform ml-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>`;
+                
+                const content = document.createElement('div');
+                content.className = 'accordion-content px-5 pb-5';
+                content.innerHTML = createTableForLogs(groupLogs, messageType);
+                groupContainer.appendChild(header);
+                groupContainer.appendChild(content);
+                accordionContainer.appendChild(groupContainer);
+
+                header.addEventListener('click', () => {
+                    const icon = header.querySelector('svg');
+                    icon.classList.toggle('rotate-180');
+                    if (content.style.maxHeight) {
+                        content.style.maxHeight = null;
+                    } else {
+                        content.style.maxHeight = content.scrollHeight + "px";
+                    }
+                });
+            }
+            dataViewContainer.appendChild(accordionContainer);
+        }
+
+        /**
+         * Creates an HTML table string for a set of log entries.
+         */
+        function createTableForLogs(logs, messageType) {
+            if (logs.length === 0) return '<p class="text-slate-500">No log entries for this group.</p>';
+            
+            const emailHeaders = ['Message Subject', 'Send Date', 'Emails Sent', 'Unique Reads', 'Unique Clicks', 'Unsubscribes', 'Click Rate', 'Read Rate'];
+            const smsHeaders = ['Message ID', 'Message Subject', 'Send Date', 'SMSs credit used', 'Sms Sent', 'Sms Failed', 'Read Rate', 'Click Rate', 'Bounce rate', 'Unsubscribe Rate'];
+            const tableHeaders = messageType === 'email' ? emailHeaders : smsHeaders;
+
+            let tableHTML = '<div class="overflow-x-auto"><table class="min-w-full text-sm divide-y divide-slate-200">';
+            tableHTML += '<thead class="bg-slate-50"><tr>';
+            tableHeaders.forEach(h => {
+                tableHTML += `<th scope="col" class="px-4 py-2 text-left font-medium text-slate-500 uppercase tracking-wider">${h}</th>`;
+            });
+            tableHTML += '</tr></thead>';
+            tableHTML += '<tbody class="bg-white divide-y divide-slate-200">';
+            logs.forEach(log => {
+                tableHTML += '<tr class="hover:bg-slate-50">';
+                tableHeaders.forEach(header => {
+                    let value = log[header] || '0';
+                    if (['Read Rate', 'Click Rate', 'Bounce rate', 'Unsubscribe Rate', 'Complaint Rate'].includes(header) && value !== '0') {
+                        value += '%';
+                    }
+                    tableHTML += `<td class="px-4 py-3 whitespace-nowrap text-primary-text">${value}</td>`;
+                });
+                tableHTML += '</tr>';
+            });
+            tableHTML += '</tbody></table></div>';
+            return tableHTML;
+        }
+
+        /**
+         * Renders the month-on-month performance graphs.
+         */
+        function renderGraphs(logs, messageType) {
+            const graphViewContainer = document.getElementById('graph-view-container');
+            if(!graphViewContainer) {
+                displayArea.innerHTML = `
+                    <div id="graph-view-container"></div>
+                    <div id="data-view-container" class="hidden"></div>
+                `;
+                switchView(activeView); // Re-apply active view
+            }
+            
+            document.getElementById('graph-view-container').innerHTML = '';
+            document.getElementById('data-view-container').innerHTML = ''; // Clear data view too
+
+            // Destroy old chart instances to prevent memory leaks
+            charts.forEach(chart => chart.destroy());
+            charts = [];
+
+            const headerMap = fullDataset.headerMap;
+            const monthlyData = {};
+
+            logs.forEach(row => {
+                const date = parseCsvDate(row[headerMap.sendDate]);
+                if (!date) return;
+                const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+                
+                if (!monthlyData[month]) {
+                    monthlyData[month] = {
+                        emailsSent: 0, smsCreditUsed: 0, readRates: [], clickRates: [],
+                        bounceRates: [], complaintRates: [], unsubscribeRates: []
+                    };
+                }
+                
+                monthlyData[month].emailsSent += parseInt(row[headerMap.emailsSent] || 0);
+                monthlyData[month].smsCreditUsed += parseFloat(row[headerMap.smsCreditUsed] || 0);
+                
+                if (parseInt(row[headerMap.messageId] || 0) > 0) {
+                    monthlyData[month].readRates.push(parseFloat(row[headerMap.readRate] || 0));
+                    monthlyData[month].clickRates.push(parseFloat(row[headerMap.clickRate] || 0));
+                    monthlyData[month].bounceRates.push(parseFloat(row[headerMap.bounceRate] || 0));
+                    monthlyData[month].complaintRates.push(parseFloat(row[headerMap.complaintRate] || 0));
+                    monthlyData[month].unsubscribeRates.push(parseFloat(row[headerMap.unsubscribeRate] || 0));
+                }
+            });
+
+            const sortedMonths = Object.keys(monthlyData).sort();
+            const calculateAverage = (arr) => arr.length > 0 ? (arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
+
+            const datasets = {
+                'Total Emails Sent': { data: sortedMonths.map(m => monthlyData[m].emailsSent), color: '#3881c1' },
+                'Total SMS Credit Used': { data: sortedMonths.map(m => monthlyData[m].smsCreditUsed), color: '#ee8031' },
+                'Avg. Read Rate (%)': { data: sortedMonths.map(m => calculateAverage(monthlyData[m].readRates)), color: '#a1d140' },
+                'Avg. Click Rate (%)': { data: sortedMonths.map(m => calculateAverage(monthlyData[m].clickRates)), color: '#d22d93' },
+                'Avg. Bounce Rate (%)': { data: sortedMonths.map(m => calculateAverage(monthlyData[m].bounceRates)), color: '#f6c944' },
+                'Avg. Complaint Rate (%)': { data: sortedMonths.map(m => calculateAverage(monthlyData[m].complaintRates)), color: '#ee8031' },
+                'Avg. Unsubscribe Rate (%)': { data: sortedMonths.map(m => calculateAverage(monthlyData[m].unsubscribeRates)), color: '#9337f6' }
+            };
+
+            const graphContainer = document.getElementById('graph-view-container');
+            graphContainer.className = 'bg-white p-6 rounded-lg shadow-md grid grid-cols-1 gap-8';
+
+            const chartsToRender = messageType === 'email' 
+                ? ['Total Emails Sent', 'Avg. Read Rate (%)', 'Avg. Click Rate (%)', 'Avg. Bounce Rate (%)', 'Avg. Complaint Rate (%)', 'Avg. Unsubscribe Rate (%)']
+                : ['Total SMS Credit Used'];
+
+            chartsToRender.forEach(title => {
+                const canvasContainer = document.createElement('div');
+                const canvas = document.createElement('canvas');
+                canvasContainer.appendChild(canvas);
+                graphContainer.appendChild(canvasContainer);
+
+                const newChart = new Chart(canvas, {
+                    type: 'line',
+                    data: {
+                        labels: sortedMonths,
+                        datasets: [{
+                            label: title,
+                            data: datasets[title].data,
+                            borderColor: datasets[title].color,
+                            backgroundColor: `${datasets[title].color}33`, // semi-transparent fill
+                            fill: true,
+                            tension: 0.1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: { position: 'top' },
+                            title: { display: true, text: title, font: { size: 16 }, color: '#21283a' },
+                            datalabels: {
+                                align: 'top',
+                                color: '#21283a',
+                                font: {
+                                    weight: 'bold'
+                                },
+                                formatter: function(value, context) {
+                                    if (context.dataset.label.includes('%')) {
+                                        return value.toFixed(2) + '%';
+                                    }
+                                    return value.toLocaleString();
+                                }
+                            }
+                        }
+                    }
+                });
+                charts.push(newChart);
+            });
+        }
+
+        /**
+         * Safely parses multiple common date formats.
+         */
+        function parseCsvDate(dateStr) {
+            if (!dateStr) return null;
+            
+            // Try parsing directly, which works for YYYY-MM-DD and other standard formats
+            const directParse = new Date(dateStr);
+            if (!isNaN(directParse.getTime())) {
+                return directParse;
+            }
+
+            // Fallback for DD/MM/YYYY HH:mm format
+            const parts = dateStr.split(' ')[0].split('/');
+            if (parts.length === 3) {
+                const [day, month, year] = parts.map(Number);
+                if (!isNaN(day) && !isNaN(month) && !isNaN(year)) {
+                    // new Date(year, monthIndex, day)
+                    return new Date(year, month - 1, day);
+                }
+            }
+            
+            return null;
+        }
+
+        /**
+         * Formats a Date object into YYYY-MM-DD for date inputs.
+         */
+        function toISODateString(date) {
+            const pad = (num) => num.toString().padStart(2, '0');
+            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+        }
+    </script>
+
+</body>
+</html>
